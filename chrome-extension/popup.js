@@ -223,6 +223,32 @@ function updateExecuteButton() {
   executeBtn.disabled = !hasQty && !hasDates;
 }
 
+// Execute script in page context (MAIN world) to call OpenlstDetItem
+async function executeInPageContext(guid, frameId) {
+  try {
+    console.log('Executing OpenlstDetItem in page context, guid:', guid);
+    
+    await chrome.scripting.executeScript({
+      target: { tabId: currentTabId, frameIds: [frameId] },
+      world: 'MAIN',
+      func: (guid) => {
+        console.log('SEFAZ Editor - Calling OpenlstDetItem with:', guid);
+        if (typeof OpenlstDetItem === 'function') {
+          OpenlstDetItem(guid);
+          return true;
+        }
+        return false;
+      },
+      args: [guid]
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Error executing in page context:', error);
+    return false;
+  }
+}
+
 // Send to frame
 async function sendToFrame(message) {
   if (productsFrameId !== null) {
@@ -235,7 +261,7 @@ async function sendToFrame(message) {
   for (const frame of frames) {
     try {
       const response = await chrome.tabs.sendMessage(currentTabId, message, { frameId: frame.frameId });
-      if (response?.success) return response;
+      if (response?.success || response?.needsScriptExecution) return response;
     } catch (e) {}
   }
   return { success: false, error: 'Comunicação falhou' };
@@ -251,20 +277,40 @@ async function executeAutomation() {
   
   const productsToEdit = products.filter(p => p.newQty && !p.completed);
   const hasDateChange = dateStart.value.length === 5 && dateEnd.value.length === 5;
-  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0) + 1; // +1 for total
+  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0) + 1;
   let currentStep = 0;
-  let allProductsDone = productsToEdit.length === 0;
   
   try {
     // Edit products one by one
     for (const product of productsToEdit) {
-      progressText.textContent = `${product.description}: Abra o painel e clique Executar`;
+      progressText.textContent = `Editando: ${product.description}...`;
       
-      const result = await sendToFrame({
+      let result = await sendToFrame({
         action: 'editProduct',
         productCode: product.code,
         newQty: product.newQty
       });
+      
+      // If needs script execution (panel not open), execute OpenlstDetItem
+      if (result?.needsScriptExecution && result?.guid) {
+        console.log('Need to execute OpenlstDetItem for:', result.guid);
+        progressText.textContent = `Abrindo painel: ${product.description}...`;
+        
+        // Execute OpenlstDetItem in page context
+        const executed = await executeInPageContext(result.guid, productsFrameId);
+        
+        if (executed) {
+          // Wait for panel to open
+          await new Promise(r => setTimeout(r, 3000));
+          
+          // Now fill the quantity
+          result = await sendToFrame({
+            action: 'fillProductQty',
+            productCode: product.code,
+            newQty: product.newQty
+          });
+        }
+      }
       
       if (result?.success) {
         product.completed = true;
@@ -275,27 +321,20 @@ async function executeAutomation() {
         renderProducts();
         await new Promise(r => setTimeout(r, 1500));
       } else {
-        progressText.textContent = result?.error || 'Abra o painel do produto';
+        progressText.textContent = result?.error || 'Abra o painel do produto manualmente';
         executeBtn.disabled = false;
         await saveState();
         return;
       }
     }
     
-    allProductsDone = true;
-    
     // Update date (go to Observação tab first)
     if (hasDateChange) {
-      progressText.textContent = 'Vá para aba Observação...';
-      await new Promise(r => setTimeout(r, 500));
-      
-      // Try to click Observação tab
+      progressText.textContent = 'Atualizando data...';
       await sendToFrame({ action: 'clickTab', tabName: 'Observação' });
       await new Promise(r => setTimeout(r, 1000));
       
-      progressText.textContent = 'Atualizando data...';
       const dateText = `De ${dateStart.value} a ${dateEnd.value}`;
-      
       const dateResult = await sendToFrame({
         action: 'updateDate',
         dateText: dateText
@@ -306,8 +345,6 @@ async function executeAutomation() {
       
       if (dateResult?.success) {
         progressText.textContent = 'Data atualizada!';
-      } else {
-        progressText.textContent = 'Atualize a data manualmente na aba Observação';
       }
       
       await new Promise(r => setTimeout(r, 1000));
@@ -330,7 +367,6 @@ async function executeAutomation() {
     progressFill.style.width = '100%';
     progressText.textContent = 'Concluído!';
     
-    // Show result
     setTimeout(() => {
       resultSection.style.display = 'block';
       totalValue.textContent = `R$ ${totalResult?.totalValue || '0,00'}`;

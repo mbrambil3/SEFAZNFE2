@@ -13,6 +13,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       editProduct(request.productCode, request.newQty).then(sendResponse);
       return true;
       
+    case 'fillProductQty':
+      fillProductQty(request.productCode, request.newQty).then(sendResponse);
+      return true;
+      
     case 'getTotalValue':
       getTotalValue().then(sendResponse);
       return true;
@@ -111,7 +115,8 @@ async function editProduct(productCode, newQty) {
     
     // Find the product link with OpenlstDetItem
     const links = document.querySelectorAll('a');
-    let openFunction = null;
+    let openFunctionGuid = null;
+    let productLink = null;
     
     for (const link of links) {
       const href = link.getAttribute('href') || '';
@@ -121,62 +126,55 @@ async function editProduct(productCode, newQty) {
       if (row && row.textContent.includes(productCode)) {
         // Check if href contains OpenlstDetItem
         if (href.includes('OpenlstDetItem')) {
+          productLink = link;
           // Extract the GUID from OpenlstDetItem('guid')
           const match = href.match(/OpenlstDetItem\(['"]([^'"]+)['"]\)/);
           if (match) {
-            openFunction = match[1];
-            console.log('SEFAZ Editor - Found OpenlstDetItem GUID:', openFunction);
+            openFunctionGuid = match[1];
+            console.log('SEFAZ Editor - Found OpenlstDetItem GUID:', openFunctionGuid);
           }
           break;
         }
       }
     }
     
-    if (openFunction) {
-      // Inject a script to call OpenlstDetItem in the page context
-      console.log('SEFAZ Editor - Injecting script to call OpenlstDetItem');
-      
-      const script = document.createElement('script');
-      script.textContent = `
-        (function() {
-          try {
-            if (typeof OpenlstDetItem === 'function') {
-              OpenlstDetItem('${openFunction}');
-              console.log('SEFAZ Editor - OpenlstDetItem called successfully');
-            } else {
-              console.log('SEFAZ Editor - OpenlstDetItem function not found');
-            }
-          } catch(e) {
-            console.log('SEFAZ Editor - Error calling OpenlstDetItem:', e);
-          }
-        })();
-      `;
-      document.head.appendChild(script);
-      script.remove();
-      
-      // Wait for panel to open
-      console.log('SEFAZ Editor - Waiting for panel to open...');
-      await sleep(3000);
-      
-      // Check if panel opened
-      qtyInput = findQtdComercialInput();
-      if (qtyInput) {
-        console.log('SEFAZ Editor - Panel opened successfully!');
-        return await fillAndSave(qtyInput, newQty, productCode);
-      }
-      
-      // Wait a bit more
-      console.log('SEFAZ Editor - Panel not found, waiting more...');
-      await sleep(2000);
-      
-      qtyInput = findQtdComercialInput();
-      if (qtyInput) {
-        console.log('SEFAZ Editor - Panel opened on second check!');
-        return await fillAndSave(qtyInput, newQty, productCode);
-      }
+    if (openFunctionGuid) {
+      // Return the GUID so popup can execute it using chrome.scripting
+      return { 
+        success: false, 
+        needsScriptExecution: true, 
+        guid: openFunctionGuid,
+        productCode: productCode,
+        newQty: newQty
+      };
     }
     
     return { success: false, error: 'Abra o painel do produto manualmente' };
+    
+  } catch (error) {
+    console.error('SEFAZ Editor - Error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Just fill and save (called after panel is opened)
+async function fillProductQty(productCode, newQty) {
+  try {
+    console.log('SEFAZ Editor - fillProductQty for:', productCode, newQty);
+    
+    let qtyInput = findQtdComercialInput();
+    
+    if (!qtyInput) {
+      // Wait a bit more for panel to fully load
+      await sleep(1000);
+      qtyInput = findQtdComercialInput();
+    }
+    
+    if (!qtyInput) {
+      return { success: false, error: 'Campo Qtd. Comercial não encontrado' };
+    }
+    
+    return await fillAndSave(qtyInput, newQty, productCode);
     
   } catch (error) {
     console.error('SEFAZ Editor - Error:', error);
