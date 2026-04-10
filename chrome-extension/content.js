@@ -111,19 +111,16 @@ async function editProduct(productCode, newQty) {
     
     // Find the product link with OpenlstDetItem
     const links = document.querySelectorAll('a');
-    let productLink = null;
     let openFunction = null;
     
     for (const link of links) {
       const href = link.getAttribute('href') || '';
-      const text = link.textContent.trim();
       
       // Check if this link is in a row that contains our product code
       const row = link.closest('tr');
       if (row && row.textContent.includes(productCode)) {
         // Check if href contains OpenlstDetItem
         if (href.includes('OpenlstDetItem')) {
-          productLink = link;
           // Extract the GUID from OpenlstDetItem('guid')
           const match = href.match(/OpenlstDetItem\(['"]([^'"]+)['"]\)/);
           if (match) {
@@ -136,49 +133,45 @@ async function editProduct(productCode, newQty) {
     }
     
     if (openFunction) {
-      // Call OpenlstDetItem directly
-      console.log('SEFAZ Editor - Calling OpenlstDetItem with GUID:', openFunction);
+      // Inject a script to call OpenlstDetItem in the page context
+      console.log('SEFAZ Editor - Injecting script to call OpenlstDetItem');
       
-      try {
-        // Try to call the function directly on window
-        if (typeof window.OpenlstDetItem === 'function') {
-          window.OpenlstDetItem(openFunction);
-        } else {
-          // Fallback: evaluate the href
-          eval(`OpenlstDetItem('${openFunction}')`);
-        }
-        
-        // Wait for panel to open
-        console.log('SEFAZ Editor - Waiting for panel to open...');
-        await sleep(2500);
-        
-        // Check if panel opened
-        qtyInput = findQtdComercialInput();
-        if (qtyInput) {
-          console.log('SEFAZ Editor - Panel opened successfully!');
-          return await fillAndSave(qtyInput, newQty, productCode);
-        } else {
-          console.log('SEFAZ Editor - Panel did not open, waiting more...');
-          await sleep(2000);
-          
-          qtyInput = findQtdComercialInput();
-          if (qtyInput) {
-            return await fillAndSave(qtyInput, newQty, productCode);
+      const script = document.createElement('script');
+      script.textContent = `
+        (function() {
+          try {
+            if (typeof OpenlstDetItem === 'function') {
+              OpenlstDetItem('${openFunction}');
+              console.log('SEFAZ Editor - OpenlstDetItem called successfully');
+            } else {
+              console.log('SEFAZ Editor - OpenlstDetItem function not found');
+            }
+          } catch(e) {
+            console.log('SEFAZ Editor - Error calling OpenlstDetItem:', e);
           }
-        }
-      } catch (e) {
-        console.log('SEFAZ Editor - Error calling OpenlstDetItem:', e);
+        })();
+      `;
+      document.head.appendChild(script);
+      script.remove();
+      
+      // Wait for panel to open
+      console.log('SEFAZ Editor - Waiting for panel to open...');
+      await sleep(3000);
+      
+      // Check if panel opened
+      qtyInput = findQtdComercialInput();
+      if (qtyInput) {
+        console.log('SEFAZ Editor - Panel opened successfully!');
+        return await fillAndSave(qtyInput, newQty, productCode);
       }
-    }
-    
-    // If still not working, try clicking the link directly
-    if (productLink) {
-      console.log('SEFAZ Editor - Trying direct link click');
-      productLink.click();
-      await sleep(2500);
+      
+      // Wait a bit more
+      console.log('SEFAZ Editor - Panel not found, waiting more...');
+      await sleep(2000);
       
       qtyInput = findQtdComercialInput();
       if (qtyInput) {
+        console.log('SEFAZ Editor - Panel opened on second check!');
         return await fillAndSave(qtyInput, newQty, productCode);
       }
     }
