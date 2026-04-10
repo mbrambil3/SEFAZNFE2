@@ -25,17 +25,15 @@ let isConnected = false;
 let currentTabId = null;
 let productsFrameId = null;
 
-// Storage key based on tab URL
-function getStorageKey() {
-  return 'sefaz_editor_state';
-}
+const STORAGE_KEY = 'sefaz_editor_state';
 
-// Save state to storage
+// Save state
 async function saveState() {
   const state = {
     products: products.map(p => ({
       code: p.code,
       description: p.description,
+      unitValue: p.unitValue,
       newQty: p.newQty || '',
       completed: p.completed || false
     })),
@@ -43,22 +41,19 @@ async function saveState() {
     dateEnd: dateEnd.value,
     timestamp: Date.now()
   };
-  
-  await chrome.storage.local.set({ [getStorageKey()]: state });
-  console.log('State saved:', state);
+  await chrome.storage.local.set({ [STORAGE_KEY]: state });
 }
 
-// Load state from storage
+// Load state
 async function loadState() {
-  const result = await chrome.storage.local.get(getStorageKey());
-  savedState = result[getStorageKey()] || {};
-  console.log('State loaded:', savedState);
+  const result = await chrome.storage.local.get(STORAGE_KEY);
+  savedState = result[STORAGE_KEY] || {};
   return savedState;
 }
 
 // Clear state
 async function clearState() {
-  await chrome.storage.local.remove(getStorageKey());
+  await chrome.storage.local.remove(STORAGE_KEY);
   savedState = {};
   dateStart.value = '';
   dateEnd.value = '';
@@ -69,6 +64,7 @@ async function clearState() {
   });
   renderProducts();
   updateExecuteButton();
+  resultSection.style.display = 'none';
 }
 
 // Initialize
@@ -84,16 +80,13 @@ async function checkConnection() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     currentTabId = tab.id;
     
-    const isCorrectSite = tab.url && tab.url.includes('nfe-extranet.sefazrs.rs.gov.br');
-    
-    if (isCorrectSite) {
+    if (tab.url && tab.url.includes('nfe-extranet.sefazrs.rs.gov.br')) {
       setConnected(true);
       await loadProducts();
     } else {
       setConnected(false);
     }
   } catch (error) {
-    console.error('Error:', error);
     setConnected(false);
   }
 }
@@ -142,7 +135,6 @@ async function loadProducts() {
     }
     
     if (allProducts.length > 0) {
-      // Merge with saved state
       products = allProducts.map(p => {
         const saved = savedState.products?.find(sp => sp.code === p.code);
         return {
@@ -152,7 +144,6 @@ async function loadProducts() {
         };
       });
       
-      // Restore dates
       if (savedState.dateStart) dateStart.value = savedState.dateStart;
       if (savedState.dateEnd) dateEnd.value = savedState.dateEnd;
       updateDatePreview();
@@ -165,7 +156,6 @@ async function loadProducts() {
       productsEmpty.style.display = 'flex';
     }
   } catch (error) {
-    console.error('Error loading products:', error);
     productsLoading.style.display = 'none';
     productsEmpty.style.display = 'flex';
   }
@@ -200,36 +190,23 @@ function renderProducts() {
   updateExecuteButton();
 }
 
-// Handle quantity input
 function handleQtyInput(e) {
   const index = parseInt(e.target.dataset.index);
   const value = e.target.value.replace(/[^\d,\.]/g, '');
   e.target.value = value;
   products[index].newQty = value;
   
-  if (value) {
-    e.target.classList.add('filled');
-  } else {
-    e.target.classList.remove('filled');
-  }
-  
+  e.target.classList.toggle('filled', !!value);
   updateExecuteButton();
 }
 
-// Date input handling
 function formatDateInput(input) {
   let value = input.value.replace(/\D/g, '');
   if (value.length >= 2) {
     value = value.slice(0, 2) + '/' + value.slice(2, 4);
   }
   input.value = value;
-  
-  if (value.length === 5) {
-    input.classList.add('filled');
-  } else {
-    input.classList.remove('filled');
-  }
-  
+  input.classList.toggle('filled', value.length === 5);
   updateDatePreview();
   saveState();
 }
@@ -240,17 +217,18 @@ function updateDatePreview() {
   datePreview.textContent = `De ${start} a ${end}`;
 }
 
-// Update execute button
 function updateExecuteButton() {
   const hasQty = products.some(p => p.newQty && !p.completed);
   const hasDates = dateStart.value.length === 5 && dateEnd.value.length === 5;
   executeBtn.disabled = !hasQty && !hasDates;
 }
 
-// Send to products frame
+// Send to frame
 async function sendToFrame(message) {
   if (productsFrameId !== null) {
-    return await chrome.tabs.sendMessage(currentTabId, message, { frameId: productsFrameId });
+    try {
+      return await chrome.tabs.sendMessage(currentTabId, message, { frameId: productsFrameId });
+    } catch (e) {}
   }
   
   const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
@@ -260,7 +238,7 @@ async function sendToFrame(message) {
       if (response?.success) return response;
     } catch (e) {}
   }
-  throw new Error('Comunicação falhou');
+  return { success: false, error: 'Comunicação falhou' };
 }
 
 // Execute automation
@@ -273,14 +251,14 @@ async function executeAutomation() {
   
   const productsToEdit = products.filter(p => p.newQty && !p.completed);
   const hasDateChange = dateStart.value.length === 5 && dateEnd.value.length === 5;
-  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0);
+  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0) + 1; // +1 for total
   let currentStep = 0;
+  let allProductsDone = productsToEdit.length === 0;
   
   try {
-    // Edit products
+    // Edit products one by one
     for (const product of productsToEdit) {
-      progressText.textContent = `Editando: ${product.description}...`;
-      progressText.textContent += ' (Abra o painel do produto)';
+      progressText.textContent = `${product.description}: Abra o painel e clique Executar`;
       
       const result = await sendToFrame({
         action: 'editProduct',
@@ -292,41 +270,67 @@ async function executeAutomation() {
         product.completed = true;
         currentStep++;
         progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
+        progressText.textContent = `${product.description}: Salvo!`;
         await saveState();
         renderProducts();
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 1500));
       } else {
-        progressText.textContent = `Erro: ${result?.error || 'Falha'}. Abra o produto manualmente.`;
-        await saveState();
+        progressText.textContent = result?.error || 'Abra o painel do produto';
         executeBtn.disabled = false;
+        await saveState();
         return;
       }
     }
     
-    // Update date (last step)
+    allProductsDone = true;
+    
+    // Update date (go to Observação tab first)
     if (hasDateChange) {
+      progressText.textContent = 'Vá para aba Observação...';
+      await new Promise(r => setTimeout(r, 500));
+      
+      // Try to click Observação tab
+      await sendToFrame({ action: 'clickTab', tabName: 'Observação' });
+      await new Promise(r => setTimeout(r, 1000));
+      
       progressText.textContent = 'Atualizando data...';
       const dateText = `De ${dateStart.value} a ${dateEnd.value}`;
       
-      const result = await sendToFrame({
+      const dateResult = await sendToFrame({
         action: 'updateDate',
         dateText: dateText
       });
       
       currentStep++;
-      progressFill.style.width = '100%';
+      progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
       
-      if (!result?.success) {
-        progressText.textContent = 'Erro ao atualizar data. Faça manualmente na aba Observação.';
+      if (dateResult?.success) {
+        progressText.textContent = 'Data atualizada!';
+      } else {
+        progressText.textContent = 'Atualize a data manualmente na aba Observação';
       }
+      
+      await new Promise(r => setTimeout(r, 1000));
     }
     
-    // Get total
-    progressText.textContent = 'Calculando total...';
-    const totalResult = await sendToFrame({ action: 'getTotalValue' });
+    // Go to Total tab and get value
+    progressText.textContent = 'Obtendo total...';
+    await sendToFrame({ action: 'clickTab', tabName: 'Total' });
+    await new Promise(r => setTimeout(r, 1000));
     
+    const totalResult = await sendToFrame({ action: 'getTotalValue' });
+    currentStep++;
+    progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
+    
+    // Go to Pagamento tab (final step)
+    progressText.textContent = 'Abrindo aba Pagamento...';
+    await sendToFrame({ action: 'clickTab', tabName: 'Pagamento' });
+    await new Promise(r => setTimeout(r, 500));
+    
+    progressFill.style.width = '100%';
     progressText.textContent = 'Concluído!';
     
+    // Show result
     setTimeout(() => {
       resultSection.style.display = 'block';
       totalValue.textContent = `R$ ${totalResult?.totalValue || '0,00'}`;
@@ -334,7 +338,6 @@ async function executeAutomation() {
     }, 500);
     
   } catch (error) {
-    console.error('Error:', error);
     progressText.textContent = `Erro: ${error.message}`;
   }
   
@@ -350,7 +353,7 @@ async function copyTotal() {
   setTimeout(() => { copyTotalBtn.textContent = 'Copiar'; }, 1500);
 }
 
-// Setup event listeners
+// Event listeners
 function setupEventListeners() {
   refreshProducts.addEventListener('click', loadProducts);
   dateStart.addEventListener('input', () => formatDateInput(dateStart));
