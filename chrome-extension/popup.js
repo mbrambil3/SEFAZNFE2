@@ -18,6 +18,7 @@ const copyTotalBtn = document.getElementById('copyTotalBtn');
 let products = [];
 let isConnected = false;
 let currentTabId = null;
+let productsFrameId = null; // Store the frame ID where products were found
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
@@ -71,32 +72,30 @@ async function loadProducts() {
   productsLoading.style.display = 'flex';
   productsEmpty.style.display = 'none';
   productsList.style.display = 'none';
+  productsFrameId = null;
   
   try {
     const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
     let allProducts = [];
     
+    console.log('Searching for products in', frames?.length || 0, 'frames');
+    
     if (frames && frames.length > 0) {
       for (const frame of frames) {
         try {
+          console.log('Checking frame:', frame.frameId, frame.url);
           const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' }, { frameId: frame.frameId });
+          console.log('Frame', frame.frameId, 'response:', response?.products?.length || 0, 'products');
+          
           if (response && response.products && response.products.length > 0) {
-            allProducts = [...allProducts, ...response.products];
+            allProducts = response.products;
+            productsFrameId = frame.frameId; // Save the frame ID where products were found!
+            console.log('Products found in frame:', productsFrameId);
+            break; // Stop searching once we find products
           }
         } catch (e) {
-          // Frame might not have content script
+          console.log('Frame', frame.frameId, 'error:', e.message);
         }
-      }
-    }
-    
-    if (allProducts.length === 0) {
-      try {
-        const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' });
-        if (response && response.products && response.products.length > 0) {
-          allProducts = response.products;
-        }
-      } catch (e) {
-        console.log('Main frame error:', e.message);
       }
     }
     
@@ -171,11 +170,14 @@ function updateExecuteButton() {
   executeBtn.disabled = !hasQuantities;
 }
 
-// Helper function to send message to all frames
-async function sendMessageToAllFrames(message) {
-  try {
+// Send message to the products frame specifically
+async function sendToProductsFrame(message) {
+  if (productsFrameId !== null) {
+    console.log('Sending to products frame:', productsFrameId, message.action);
+    return await chrome.tabs.sendMessage(currentTabId, message, { frameId: productsFrameId });
+  } else {
+    // Fallback: try all frames
     const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
-    
     for (const frame of frames) {
       try {
         const response = await chrome.tabs.sendMessage(currentTabId, message, { frameId: frame.frameId });
@@ -183,18 +185,14 @@ async function sendMessageToAllFrames(message) {
           return response;
         }
       } catch (e) {
-        // Continue to next frame
+        // Continue
       }
     }
-    
-    return await chrome.tabs.sendMessage(currentTabId, message);
-  } catch (error) {
-    console.error('Error sending message to frames:', error);
-    throw error;
+    throw new Error('Não foi possível comunicar com a página');
   }
 }
 
-// Execute the automation (only product editing, no date)
+// Execute the automation (only product editing)
 async function executeAutomation() {
   if (!isConnected) return;
   
@@ -206,42 +204,52 @@ async function executeAutomation() {
   const productsToEdit = products.filter(p => p.newQty && p.newQty.length > 0);
   const totalSteps = productsToEdit.length;
   let currentStep = 0;
+  let hasError = false;
   
   try {
     // Edit each product
     for (const product of productsToEdit) {
       progressText.textContent = `Editando: ${product.description}...`;
+      console.log('Editing product:', product.code, product.description, 'new qty:', product.newQty);
       
-      const result = await sendMessageToAllFrames({
+      const result = await sendToProductsFrame({
         action: 'editProduct',
+        productCode: product.code, // Send code instead of index for more reliable matching
         productIndex: product.index,
         newQty: product.newQty
       });
       
-      if (!result.success) {
-        throw new Error(result.error || 'Erro ao editar produto');
+      console.log('Edit result:', result);
+      
+      if (!result || !result.success) {
+        progressText.textContent = `Erro: ${result?.error || 'Falha ao editar produto'}`;
+        hasError = true;
+        break;
       }
       
       currentStep++;
       progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
       
       // Delay between products
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 1500));
     }
     
-    // Get total value
-    progressText.textContent = 'Calculando valor total...';
-    const response = await sendMessageToAllFrames({ action: 'getTotalValue' });
+    if (!hasError) {
+      // Get total value
+      progressText.textContent = 'Calculando valor total...';
+      const response = await sendToProductsFrame({ action: 'getTotalValue' });
+      
+      progressFill.style.width = '100%';
+      progressText.textContent = 'Concluído!';
+      
+      setTimeout(() => {
+        resultSection.style.display = 'block';
+        totalValue.textContent = `R$ ${response?.totalValue || '0,00'}`;
+        progressContainer.style.display = 'none';
+      }, 500);
+    }
     
-    progressFill.style.width = '100%';
-    progressText.textContent = 'Concluído!';
-    
-    setTimeout(() => {
-      resultSection.style.display = 'block';
-      totalValue.textContent = `R$ ${response.totalValue || '0,00'}`;
-      progressContainer.style.display = 'none';
-      executeBtn.disabled = false;
-    }, 500);
+    executeBtn.disabled = false;
     
   } catch (error) {
     console.error('Error during automation:', error);
