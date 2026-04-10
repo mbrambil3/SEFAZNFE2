@@ -347,7 +347,7 @@ async function executeAutomation() {
 
 // Copy total
 async function copyTotal() {
-  const value = totalValue.textContent;
+  const value = totalValue.textContent.replace('R$', '').trim();
   await navigator.clipboard.writeText(value);
   copyTotalBtn.textContent = 'Copiado!';
   setTimeout(() => { copyTotalBtn.textContent = 'Copiar'; }, 1500);
