@@ -93,61 +93,143 @@ async function getProducts() {
   }
 }
 
-// Edit product - only fills if edit panel is already open
+// Edit product - tries to open panel automatically
 async function editProduct(productCode, newQty) {
   try {
     console.log('SEFAZ Editor - editProduct for code:', productCode, 'qty:', newQty);
     
-    // Check if edit panel is open by looking for Qtd. Comercial field
-    const qtyInput = findQtdComercialInput();
+    // First, check if edit panel is already open
+    let qtyInput = findQtdComercialInput();
     
-    if (!qtyInput) {
-      return { success: false, error: 'Abra o painel de edição do produto e clique em Executar novamente.' };
+    if (qtyInput) {
+      // Panel is open, fill the quantity
+      return await fillAndSave(qtyInput, newQty, productCode);
     }
     
-    // Fill the quantity
-    console.log('SEFAZ Editor - Found qty input, current value:', qtyInput.value);
+    // Panel is not open, try to open it
+    console.log('SEFAZ Editor - Panel not open, trying to open...');
     
-    qtyInput.focus();
-    await sleep(100);
-    qtyInput.select();
-    await sleep(50);
+    // Find the product link with OpenlstDetItem
+    const links = document.querySelectorAll('a');
+    let productLink = null;
+    let openFunction = null;
     
-    // Format quantity with 4 decimal places
-    let formattedQty = newQty.replace('.', ',');
-    if (!formattedQty.includes(',')) {
-      formattedQty = formattedQty + ',0000';
-    } else {
-      const parts = formattedQty.split(',');
-      formattedQty = parts[0] + ',' + (parts[1] || '').padEnd(4, '0').substring(0, 4);
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      const text = link.textContent.trim();
+      
+      // Check if this link is in a row that contains our product code
+      const row = link.closest('tr');
+      if (row && row.textContent.includes(productCode)) {
+        // Check if href contains OpenlstDetItem
+        if (href.includes('OpenlstDetItem')) {
+          productLink = link;
+          // Extract the GUID from OpenlstDetItem('guid')
+          const match = href.match(/OpenlstDetItem\(['"]([^'"]+)['"]\)/);
+          if (match) {
+            openFunction = match[1];
+            console.log('SEFAZ Editor - Found OpenlstDetItem GUID:', openFunction);
+          }
+          break;
+        }
+      }
     }
     
-    qtyInput.value = '';
-    await sleep(50);
-    qtyInput.value = formattedQty;
-    
-    qtyInput.dispatchEvent(new Event('input', { bubbles: true }));
-    qtyInput.dispatchEvent(new Event('change', { bubbles: true }));
-    qtyInput.dispatchEvent(new Event('blur', { bubbles: true }));
-    
-    console.log('SEFAZ Editor - Quantity set to:', formattedQty);
-    await sleep(300);
-    
-    // Click Salvar Item
-    const saveBtn = findButton('Salvar Item');
-    if (saveBtn) {
-      console.log('SEFAZ Editor - Clicking Salvar Item');
-      saveBtn.click();
-      await sleep(2000);
-      console.log('SEFAZ Editor - Product saved!');
-      return { success: true };
-    } else {
-      return { success: false, error: 'Botão Salvar Item não encontrado' };
+    if (openFunction) {
+      // Call OpenlstDetItem directly
+      console.log('SEFAZ Editor - Calling OpenlstDetItem with GUID:', openFunction);
+      
+      try {
+        // Try to call the function directly on window
+        if (typeof window.OpenlstDetItem === 'function') {
+          window.OpenlstDetItem(openFunction);
+        } else {
+          // Fallback: evaluate the href
+          eval(`OpenlstDetItem('${openFunction}')`);
+        }
+        
+        // Wait for panel to open
+        console.log('SEFAZ Editor - Waiting for panel to open...');
+        await sleep(2500);
+        
+        // Check if panel opened
+        qtyInput = findQtdComercialInput();
+        if (qtyInput) {
+          console.log('SEFAZ Editor - Panel opened successfully!');
+          return await fillAndSave(qtyInput, newQty, productCode);
+        } else {
+          console.log('SEFAZ Editor - Panel did not open, waiting more...');
+          await sleep(2000);
+          
+          qtyInput = findQtdComercialInput();
+          if (qtyInput) {
+            return await fillAndSave(qtyInput, newQty, productCode);
+          }
+        }
+      } catch (e) {
+        console.log('SEFAZ Editor - Error calling OpenlstDetItem:', e);
+      }
     }
+    
+    // If still not working, try clicking the link directly
+    if (productLink) {
+      console.log('SEFAZ Editor - Trying direct link click');
+      productLink.click();
+      await sleep(2500);
+      
+      qtyInput = findQtdComercialInput();
+      if (qtyInput) {
+        return await fillAndSave(qtyInput, newQty, productCode);
+      }
+    }
+    
+    return { success: false, error: 'Abra o painel do produto manualmente' };
     
   } catch (error) {
     console.error('SEFAZ Editor - Error:', error);
     return { success: false, error: error.message };
+  }
+}
+
+// Fill quantity and save
+async function fillAndSave(qtyInput, newQty, productCode) {
+  console.log('SEFAZ Editor - Filling qty input, current value:', qtyInput.value);
+  
+  qtyInput.focus();
+  await sleep(100);
+  qtyInput.select();
+  await sleep(50);
+  
+  // Format quantity with 4 decimal places
+  let formattedQty = newQty.replace('.', ',');
+  if (!formattedQty.includes(',')) {
+    formattedQty = formattedQty + ',0000';
+  } else {
+    const parts = formattedQty.split(',');
+    formattedQty = parts[0] + ',' + (parts[1] || '').padEnd(4, '0').substring(0, 4);
+  }
+  
+  qtyInput.value = '';
+  await sleep(50);
+  qtyInput.value = formattedQty;
+  
+  qtyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  qtyInput.dispatchEvent(new Event('change', { bubbles: true }));
+  qtyInput.dispatchEvent(new Event('blur', { bubbles: true }));
+  
+  console.log('SEFAZ Editor - Quantity set to:', formattedQty);
+  await sleep(300);
+  
+  // Click Salvar Item
+  const saveBtn = findButton('Salvar Item');
+  if (saveBtn) {
+    console.log('SEFAZ Editor - Clicking Salvar Item');
+    saveBtn.click();
+    await sleep(2000);
+    console.log('SEFAZ Editor - Product', productCode, 'saved!');
+    return { success: true };
+  } else {
+    return { success: false, error: 'Botão Salvar Item não encontrado' };
   }
 }
 
